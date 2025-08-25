@@ -1,88 +1,52 @@
-// /api/vehicles/index.js — DIAG
+// /api/vehicles/index.js — fm-track proxy (CommonJS, Azure SWA)
 module.exports = async function (context, req) {
-  const API_KEY = process.env.TT_API_KEY || '';
-  const TT_BASE = (process.env.TT_BASE_URL || '').replace(/\/$/, ''); // bv. https://track.bcntracer.nl/api
-  const DEBUG = req && req.query && ('debug' in req.query);
+  const API_KEY = process.env.TT_API_KEY;
+  const BASE = (process.env.TT_BASE_URL || "").replace(/\/$/, "");
+  const VERSION = process.env.TT_API_VERSION || "1";
 
-  const respond = (status, obj) => {
-    context.res = {
-      status,
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-      body: JSON.stringify(obj)
-    };
+  const respond = (status, obj, contentType = "application/json; charset=utf-8") => {
+    context.res = { status, headers: { "Content-Type": contentType }, body: JSON.stringify(obj) };
   };
 
-  if (!API_KEY || !TT_BASE) {
-    return respond(500, { ok:false, error:"CONFIG", msg:"TT_API_KEY or TT_BASE_URL not configured" });
+  if (!API_KEY || !BASE) {
+    return respond(500, { ok: false, error: "CONFIG", msg: "TT_API_KEY or TT_BASE_URL not configured" });
   }
 
-  // Meest gangbare paden in TrustTrack/Ruptela tenants:
-  const endpoints = [
-    "/vehicles/positions",
-    "/vehicles",
-    "/objects/positions",
-    "/objects",
-    "/units"
-  ];
+  // Primary endpoint you confirmed works:
+  //   GET https://api.fm-track.com/objects?version=1&api_key=API_KEY
+  const url = `${BASE}/objects?version=${encodeURIComponent(VERSION)}&api_key=${encodeURIComponent(API_KEY)}`;
 
-  const headerOptions = [
-    { name: "X-Api-Key", headers: { "X-Api-Key": API_KEY, "Accept": "application/json" } },
-    { name: "Bearer",   headers: { "Authorization": `Bearer ${API_KEY}`, "Accept": "application/json" } }
-  ];
+  try {
+    const r = await fetch(url, { headers: { "Accept": "application/json" } });
+    const text = await r.text();
 
-  const attempts = [];
-
-  for (const ep of endpoints) {
-    const url = `${TT_BASE}${ep.startsWith('/') ? '' : '/'}${ep}`;
-    for (const opt of headerOptions) {
-      try {
-        const r = await fetch(url, { headers: opt.headers, redirect: "follow" });
-        const text = await r.text();
-        const info = {
-          url, auth: opt.name, status: r.status,
-          ok: r.ok, contentType: r.headers.get('content-type') || null,
-          length: text.length
-        };
-        if (DEBUG) info.preview = text.slice(0, 300);
-
-        // ✓ Succes: 200 + JSON
-        if (r.ok) {
-          // probeer JSON te parsen
-          try {
-            const raw = JSON.parse(text);
-            const arr = Array.isArray(raw) ? raw : (raw.vehicles ?? raw ?? []);
-            const vehicles = (arr || []).map(v => ({
-              id: v.id || v.vehicleId || v.name || v.unitId || 'unknown',
-              lat: v.lat ?? v.latitude,
-              lon: v.lon ?? v.longitude,
-              speed: v.speed ?? null,
-              heading: v.heading ?? v.course ?? null,
-              ts: v.timestamp ?? v.lastSeen ?? Date.now()
-            })).filter(v => typeof v.lat === 'number' && typeof v.lon === 'number');
-
-            return respond(200, { ok:true, used: info, count: vehicles.length, vehicles, attempts: DEBUG ? attempts : undefined });
-          } catch {
-            // 200 maar geen JSON -> login HTML of andere pagina
-            attempts.push({ ...info, note: "non-JSON at 200" });
-            continue;
-          }
-        } else {
-          // Niet ok: 401/403 -> waarschijnlijk verkeerde authstijl
-          attempts.push(info);
-          continue;
-        }
-      } catch (e) {
-        attempts.push({ url, auth: opt.name, exception: String(e).slice(0,200) });
-        continue;
-      }
+    if (!r.ok) {
+      return respond(r.status, { ok: false, error: "UPSTREAM", status: r.status, bodyPreview: text.slice(0, 300) }, "application/json; charset=utf-8");
     }
-  }
 
-  // Niets gelukt:
-  return respond(502, {
-    ok:false,
-    error:"NO_MATCH",
-    msg:"Geen endpoint/header-combinatie gaf JSON terug.",
-    attempts // bevat per poging: url, auth, status, contentType (+preview bij ?debug=1)
-  });
+    let raw;
+    try { raw = JSON.parse(text); }
+    catch { return respond(502, { ok: false, error: "NON_JSON", msg: "fm-track returned non-JSON" }); }
+
+    // Normalize to a simple vehicles array.
+    // fm-track commonly returns an array of "objects" with last position nested.
+    // This mapper handles a few likely shapes:
+    const list = Array.isArray(raw) ? raw : (raw.objects || raw.data || []);
+    const vehicles = (list || []).map(o => {
+      // try multiple field shapes
+      const id = o.id || o.objectId || o.name || o.unitId || o.uniqueId || "unknown";
+      const pos = o.lastPosition || o.position || o.last_pos || {};
+      const lat = Number(o.lat ?? o.latitude ?? pos.lat ?? pos.latitude);
+      const lon = Number(o.lon ?? o.longitude ?? pos.lon ?? pos.longitude);
+      const speed = o.speed ?? pos.speed ?? null;
+      const heading = o.heading ?? o.course ?? pos.heading ?? pos.course ?? null;
+      const ts = o.timestamp ?? o.lastSeen ?? pos.timestamp ?? pos.time ?? Date.now();
+      return { id, lat, lon, speed, heading, ts };
+    }).filter(v => Number.isFinite(v.lat) && Number.isFinite(v.lon));
+
+    return respond(200, { ok: true, count: vehicles.length, vehicles });
+  } catch (e) {
+    context.log(e);
+    return respond(500, { ok: false, error: "PROXY", msg: "Error calling fm-track API" });
+  }
 };
