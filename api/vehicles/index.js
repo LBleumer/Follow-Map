@@ -1,7 +1,6 @@
 // /api/vehicles/index.js — TEST
 module.exports = async function (context, req) {
-  context.log("Test function hit!");
-
+  context.log("vehicles test function hit");
   context.res = {
     status: 200,
     headers: { "Content-Type": "application/json; charset=utf-8" },
@@ -11,6 +10,5 @@ module.exports = async function (context, req) {
       now: new Date().toISOString()
     })
   };
-
   return;
 };
