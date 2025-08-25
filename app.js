@@ -23,7 +23,7 @@ function vehicleIcon(angleDeg) {
 
 function popupHtml(v) {
   const when = v.ts ? new Date(v.ts).toLocaleString() : '-';
-  return `<b>${v.name || v.id}</b><br>
+  return `<b>${v.name || 'Onbekend'}</b><br>
           Laatst gezien: ${when}<br>
           Snelheid: ${v.speed ?? '-'} km/u<br>
           Richting: ${v.heading ?? '-'}`;
