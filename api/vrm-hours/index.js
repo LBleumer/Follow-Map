@@ -40,24 +40,25 @@ module.exports = async function (context, req) {
   };
 
   try {
-    // 1) Who am I?
-    let idUser = null, Hgood = null, last = null;
+    // 1) /users/me to get user id (supports both header types)
+    let userId = null, Hgood = null, last = null;
     for (const H of headerOptions) {
       const me = await httpGet(`${base}/users/me`, H);
       last = me;
       if (me.status === 200) {
-        const j = parse(me.text); idUser = j?.idUser || j?.data?.idUser || j?.user?.idUser;
-        if (idUser) { Hgood = H; break; }
+        const j = parse(me.text);
+        userId = j?.user?.id ?? j?.idUser ?? j?.data?.idUser ?? null;
+        if (userId) { Hgood = H; break; }
       } else if (me.status === 401 || me.status === 403) {
         continue;
       } else {
         return respond(me.status, { ok:false, error:"VRM_HTTP_ME", preview: me.text.slice(0,400) });
       }
     }
-    if (!idUser || !Hgood) return respond(last?.status||401, { ok:false, error:"AUTH", msg:"Token not accepted for /users/me." });
+    if (!userId || !Hgood) return respond(last?.status||401, { ok:false, error:"AUTH", msg:"Token accepted but no user id found in /users/me." });
 
-    // 2) List my installations
-    const li = await httpGet(`${base}/users/${idUser}/installations?extended=1`, Hgood);
+    // 2) List installations for this user
+    const li = await httpGet(`${base}/users/${userId}/installations?extended=1`, Hgood);
     if (li.status !== 200) return respond(li.status, { ok:false, error:"VRM_HTTP_INSTALLATIONS", preview: li.text.slice(0,400) });
     const pList = parse(li.text);
     const list = Array.isArray(pList?.records) ? pList.records :
@@ -65,7 +66,7 @@ module.exports = async function (context, req) {
                  Array.isArray(pList?.data?.records) ? pList.data.records :
                  Array.isArray(pList?.data?.installations) ? pList.data.installations : [];
 
-    // 3) Hours per site
+    // 3) Pull hours per site
     const items = [];
     const batch = 4;
     for (let i=0; i<list.length; i+=batch) {
@@ -74,8 +75,10 @@ module.exports = async function (context, req) {
         const idSite = inst.idSite || inst.id || inst.identifier;
         const name = inst.name || inst.siteName || `Site ${idSite}`;
         if (!idSite) return { idSite:null, name, hours:null, ts:null, note:"missing idSite" };
+
         const ov = await httpGet(`${base}/installations/${idSite}/system-overview`, Hgood);
         if (ov.status !== 200) return { idSite, name, hours:null, ts:null, note:`HTTP ${ov.status}` };
+
         const p = parse(ov.text); const rec = p?.records || p?.data || p;
         const ex = extractHours(rec);
         return { idSite, name, hours: ex.hours, ts: ex.ts, key: ex.key || null };
@@ -83,7 +86,7 @@ module.exports = async function (context, req) {
       items.push(...results);
     }
 
-    return respond(200, { ok:true, idUser, count: items.length, items });
+    return respond(200, { ok:true, userId, count: items.length, items });
   } catch (e) {
     return respond(500, { ok:false, error:"FATAL", msg:String(e).slice(0,400) });
   }
