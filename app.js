@@ -8,24 +8,6 @@ const DSE_NAME_MAP = {
   // "Ranger VKG-13-S": "015K047 Yanmar - 6729699673",
 };
 
-// ===== VRM installations (primary presence) =====
-let VRM_BY_NAME = Object.create(null);
-
-async function fetchVRMSites() {
-  const r = await fetch('/api/vrm-installations', { cache: 'no-store' });
-  const data = await r.json();
-  if (!data.ok) throw new Error(data.error || 'VRM API error');
-  return data.installations || [];
-}
-
-function indexVRM(sites) {
-  VRM_BY_NAME = Object.create(null);
-  for (const s of sites) {
-    if (!s || !s.name) continue;
-    VRM_BY_NAME[s.name] = s;
-  }
-}
-
 function hoursToDecimal(hhmmss) {
   if (!hhmmss) return null;
   const [h, m = 0, s = 0] = hhmmss.split(':').map(Number);
@@ -47,7 +29,7 @@ function indexDSE(items) {
 function renderTable(items) {
   const tbody = document.querySelector('#dse-table tbody');
   const empty = document.getElementById('empty');
-  if (!tbody) return; // table not in DOM
+  if (!tbody) return;
 
   tbody.innerHTML = '';
 
@@ -57,9 +39,7 @@ function renderTable(items) {
   }
   if (empty) empty.hidden = true;
 
-  // default sort: moduleName
   const sorted = items.slice().sort((a,b) => (a.moduleName||'').localeCompare(b.moduleName||''));
-
   for (const row of sorted) {
     const tr = document.createElement('tr');
     tr.dataset.module = row.moduleName;
@@ -87,7 +67,6 @@ function attachTableUX() {
   search?.addEventListener('input', apply);
   refreshBtn?.addEventListener('click', loadHoursIntoTable);
 
-  // header click sort
   ths.forEach(th => {
     th.addEventListener('click', () => {
       const key = th.getAttribute('data-k'); // 'moduleName' | 'hours' | 'ts'
@@ -103,14 +82,13 @@ function attachTableUX() {
     });
   });
 
-  // row click -> fly to marker
   tbody?.addEventListener('click', (e) => {
     const tr = e.target.closest('tr');
     if (!tr) return;
     flyToVehicleForModule(tr.dataset.module);
   });
 
-  apply(); // initial render with current DSE_ITEMS
+  apply();
   TABLE_INITIALISED = true;
 }
 
@@ -121,7 +99,7 @@ async function loadHoursIntoTable() {
     if (!TABLE_INITIALISED) attachTableUX(); else renderTable(DSE_ITEMS);
   } catch (err) {
     console.warn('Failed to load DSE hours:', err);
-    renderTable([]); // shows "Geen data"
+    renderTable([]);
   }
 }
 
@@ -184,22 +162,23 @@ async function refreshVehicles() {
         m.setIcon(vehicleIcon(v.heading));
         m.setPopupContent(popupHtml(v));
       }
-      m.__vehData = v; // keep the vehicle on the marker so the table can find it
+      m.__vehData = v;
       bounds.push([v.lat, v.lon]);
     });
 
-    // remove stale
     for (const [id, m] of markers) {
       if (!seen.has(id)) { vehicleLayer.removeLayer(m); markers.delete(id); }
     }
 
-    if (!didFit && bounds.length) { map.fitBounds(bounds, { padding: [30, 30] }); didFit = true; }
+    if (!didFit && bounds.length) {
+      map.fitBounds(bounds, { padding: [30, 30] });
+      didFit = true;
+    }
   } catch (err) {
     console.error('Vehicle refresh failed:', err);
   }
 }
 
-// link table → map marker
 function flyToVehicleForModule(moduleName) {
   const fmName = Object.keys(DSE_NAME_MAP).find(k => DSE_NAME_MAP[k] === moduleName) || moduleName;
   for (const [, m] of markers) {
@@ -213,41 +192,54 @@ function flyToVehicleForModule(moduleName) {
   }
 }
 
+// ===== VRM (safe, optional) =====
+let VRM_BY_NAME = Object.create(null);
+async function fetchVRMSites() {
+  const r = await fetch('/api/vrm-installations', { cache: 'no-store' });
+  if (!r.ok) throw new Error(`VRM HTTP ${r.status}`);
+  const data = await r.json();
+  if (!data.ok) throw new Error(data.error || 'VRM API error');
+  return data.installations || [];
+}
+function indexVRM(sites) {
+  VRM_BY_NAME = Object.create(null);
+  for (const s of sites) if (s?.name) VRM_BY_NAME[s.name] = s;
+}
 const vrmLayer = L.layerGroup().addTo(map);
-
 function drawVRMOnlySites(sites) {
   vrmLayer.clearLayers();
   for (const s of sites) {
     if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
-
-    // Skip if fm-track already has a marker with same/similar name
-    let duplicate = false;
+    // skip if fm-track already has similar name
+    let dup = false;
     for (const [, m] of markers) {
       const v = m.__vehData;
-      if (v && (v.name === s.name || s.name.includes(v.name) || v.name.includes(s.name))) {
-        duplicate = true; break;
-      }
+      if (v && (v.name === s.name || s.name.includes(v.name) || v.name.includes(s.name))) { dup = true; break; }
     }
-    if (duplicate) continue;
-
-    L.marker([s.lat, s.lon])
-      .bindPopup(`<b>${s.name}</b><br>Last VRM GPS: ${s.last_seen || '-'}`)
-      .addTo(vrmLayer);
+    if (dup) continue;
+    L.marker([s.lat, s.lon]).bindPopup(`<b>${s.name}</b><br>Last VRM GPS: ${s.last_seen || '-'}`).addTo(vrmLayer);
   }
 }
 
-
 // ===== STARTUP =====
 document.addEventListener('DOMContentLoaded', async () => {
-  // 1) VRM
-  let vrmSites = [];
-  try { vrmSites = await fetchVRMSites(); indexVRM(vrmSites); drawVRMOnlySites(vrmSites); }
-  catch(e) { console.warn('VRM load failed:', e); }
+  try {
+    // kick table (even if VRM fails)
+    await loadHoursIntoTable();
 
-  // 2) DSE hours (you already have this)
-  await loadHoursIntoTable();
+    // try VRM, but don't block UI if it fails
+    try {
+      const vrmSites = await fetchVRMSites();
+      indexVRM(vrmSites);
+      drawVRMOnlySites(vrmSites);
+    } catch (vrmErr) {
+      console.warn('VRM load skipped:', vrmErr);
+    }
 
-  // 3) Vehicles (fm-track)
-  refreshVehicles();
-  setInterval(refreshVehicles, 10000);
+    // start vehicles loop
+    refreshVehicles();
+    setInterval(refreshVehicles, 10000);
+  } catch (e) {
+    console.error('Startup failed:', e);
+  }
 });
