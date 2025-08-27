@@ -1,36 +1,75 @@
-// === Simple, robust app.js ===
-
-// ---------- Leaflet map ----------
+// ================== Kaart ==================
 const map = L.map('map').setView([52.2, 5.3], 7);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap-bijdragers'
 }).addTo(map);
 
-// Layers
+// Lagen
 const vehicleLayer = L.layerGroup().addTo(map); // fm-track
-const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS markers
+const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS
 
-// Cache for fm-track markers
-const markers = new Map(); // id -> Leaflet marker
-let didFit = false;
-
-// ---------- DSE (hours) ----------
-let DSE_ITEMS = [];
-let DSE_BY_MODULE = Object.create(null);
-
-// Optional mapping if names differ between fm-track and DSE
-const DSE_NAME_MAP = {
-  // "FM name" : "DSE moduleName"
-  // "Ranger VKG-13-S": "015K047 Yanmar - 6729699673",
-};
-
-function hoursToDecimal(hhmmss) {
-  if (!hhmmss) return null;
-  const [h, m = 0, s = 0] = String(hhmmss).split(':').map(Number);
-  return (h || 0) + (m || 0) / 60 + (s || 0) / 3600;
+// Kleine, felgroene puntjes
+function greenDot(lat, lon) {
+  return L.circleMarker([lat, lon], {
+    radius: 5,
+    color: '#00E676',
+    weight: 1,
+    fillColor: '#00E676',
+    fillOpacity: 0.95
+  });
 }
 
+// ================== DSE (draaiuren) ==================
+let DSE_ITEMS = [];
+let DSE_BY_MODULE = Object.create(null);
+let DSE_BY_CODE   = Object.create(null);
+
+// Handmatige overrides (optioneel):
+// - Map een DSE moduleName of een “gekke” naam naar een eenduidige code.
+const MANUAL_MAP = {
+  // "259289F0B0B (15K30) - 259289F0B0B": "015K030",
+  // "006K031 Yanmar - 6E2A22C092": "006K031",
+};
+
+// ================== Code-extractie & normalisatie ==================
+function normalizeCodeLike(str) {
+  if (!str) return null;
+  const s = String(str).toUpperCase();
+
+  // 1) Als er iets als (15K30) staat → pak binnen de haakjes
+  let m = s.match(/\(([0-9A-Z]{2,5})K([0-9A-Z]{2,5})\)/);
+  if (m) return `${m[1].padStart(3,'0')}K${m[2].padStart(3,'0')}`;
+
+  // 2) Zoek naar ###K### of varianten met 2-3 cijfers aan beide kanten
+  m = s.match(/\b(\d{2,3})K(\d{2,3})\b/);
+  if (m) return `${m[1].padStart(3,'0')}K${m[2].padStart(3,'0')}`;
+
+  // 3) Soms begint VRM met de code als eerste token (tot spatie/komma)
+  const first = s.split(/[ ,]/)[0].replace(/[^0-9A-Z]/g,'');
+  if (/^\d{2,3}K\d{2,3}$/.test(first)) {
+    const [a,b] = first.split('K');
+    return `${a.padStart(3,'0')}K${b.padStart(3,'0')}`;
+  }
+
+  // 4) Geen match
+  return null;
+}
+
+function codeFromDSE(moduleName) {
+  // Eerst handmatig
+  if (MANUAL_MAP[moduleName]) return MANUAL_MAP[moduleName];
+  // Daarna automatisch
+  return normalizeCodeLike(moduleName);
+}
+
+function codeFromVRMName(name) {
+  // VRM start vrijwel altijd met de code
+  const code = normalizeCodeLike(name);
+  return code;
+}
+
+// ================== DSE laden + indexeren ==================
 async function fetchDSEHours() {
   const r = await fetch('/api/dse-hours', { cache: 'no-store' });
   if (!r.ok) throw new Error(`DSE HTTP ${r.status}`);
@@ -41,7 +80,19 @@ async function fetchDSEHours() {
 
 function indexDSE(items) {
   DSE_BY_MODULE = Object.create(null);
-  for (const it of items) DSE_BY_MODULE[it.moduleName] = it;
+  DSE_BY_CODE   = Object.create(null);
+
+  for (const it of items) {
+    DSE_BY_MODULE[it.moduleName] = it;
+    const c = codeFromDSE(it.moduleName);
+    if (c) DSE_BY_CODE[c] = it;
+  }
+}
+
+function hoursToDecimal(hhmmss) {
+  if (!hhmmss) return null;
+  const [h, m = 0, s = 0] = String(hhmmss).split(':').map(Number);
+  return (h || 0) + (m || 0) / 60 + (s || 0) / 3600;
 }
 
 function renderTable(items) {
@@ -58,10 +109,12 @@ function renderTable(items) {
   if (empty) empty.hidden = true;
 
   for (const row of list) {
+    const code = codeFromDSE(row.moduleName);
     const tr = document.createElement('tr');
     tr.dataset.module = row.moduleName || '';
+    tr.dataset.code   = code || '';
     tr.innerHTML = `
-      <td>${row.moduleName || ''}</td>
+      <td>${row.moduleName || ''}${code ? ` <small class="muted">[${code}]</small>` : ''}</td>
       <td class="num" title="${row.hours || ''}">${row.hours || ''}</td>
       <td>${row.ts || ''}</td>
     `;
@@ -110,7 +163,8 @@ function attachTableUX() {
     tbody.addEventListener('click', (e) => {
       const tr = e.target.closest('tr');
       if (!tr) return;
-      flyToVehicleForModule(tr.dataset.module);
+      const moduleName = tr.dataset.module;
+      flyToVehicleForModule(moduleName);
     });
   }
 
@@ -128,29 +182,26 @@ async function loadHoursIntoTable() {
   renderTable(DSE_ITEMS);
 }
 
-// ---------- fm-track vehicles ----------
-function vehicleIcon(angleDeg) {
-  const rot = Number.isFinite(angleDeg) ? angleDeg : 0;
-  return L.divIcon({
-    className: 'veh',
-    html: `<div style="transform: rotate(${rot}deg);">🚗</div>`,
-    iconSize: [24, 24],
-    iconAnchor: [12, 12]
-  });
-}
+// ================== fm-track voertuigen ==================
+const markers = new Map();
+let didFit = false;
 
-function popupHtml(v) {
+function popupHtmlForVehicle(v) {
   const when = v.ts ? new Date(v.ts).toLocaleString() : '-';
 
-  // Map fm name -> DSE key (if provided), else try same string
-  const dseKey = DSE_NAME_MAP[v.name] || v.name;
-  const dse = DSE_BY_MODULE[dseKey];
+  // Koppel eerst via moduleName (oude manier), daarna via code
+  const dseByName = DSE_BY_MODULE[v.name];
+  const code = normalizeCodeLike(v.name);
+  const dseByCode = code ? DSE_BY_CODE[code] : null;
+  const dse = dseByName || dseByCode;
 
   const hoursLine = dse
     ? `Draaiuren: ${dse.hours} <small>${dse.ts ? `(${dse.ts})` : ''}</small>`
     : `Draaiuren: -`;
 
-  return `<b>${v.name || v.id}</b><br>
+  const codeBadge = code ? ` <small class="muted">[${code}]</small>` : '';
+
+  return `<b>${v.name || v.id}${codeBadge}</b><br>
           Laatst gezien: ${when}<br>
           Snelheid: ${v.speed ?? '-'} km/u<br>
           Richting: ${v.heading ?? '-'}<br>
@@ -173,20 +224,17 @@ async function refreshVehicles() {
 
       let m = markers.get(v.id);
       if (!m) {
-        m = L.marker([v.lat, v.lon], { icon: vehicleIcon(v.heading) })
-             .bindPopup(popupHtml(v))
-             .addTo(vehicleLayer);
+        m = greenDot(v.lat, v.lon).bindPopup(popupHtmlForVehicle(v)).addTo(vehicleLayer);
         markers.set(v.id, m);
       } else {
         m.setLatLng([v.lat, v.lon]);
-        m.setIcon(vehicleIcon(v.heading));
-        m.setPopupContent(popupHtml(v));
+        m.setPopupContent(popupHtmlForVehicle(v));
       }
       m.__vehData = v;
       bounds.push([v.lat, v.lon]);
     });
 
-    // remove stale
+    // verwijder oude
     for (const [id, m] of markers) {
       if (!seen.has(id)) {
         vehicleLayer.removeLayer(m);
@@ -203,15 +251,23 @@ async function refreshVehicles() {
   }
 }
 
-// Fly to vehicle whose fm name matches a DSE moduleName (or mapping)
+// Vind fm-track marker voor een DSE module (klik in tabel → zoom)
 function flyToVehicleForModule(moduleName) {
   if (!moduleName) return;
-  const fmName = Object.keys(DSE_NAME_MAP).find(k => DSE_NAME_MAP[k] === moduleName) || moduleName;
+  const code = codeFromDSE(moduleName);
 
   for (const [, markerObj] of markers) {
     const v = markerObj.__vehData;
     if (!v) continue;
-    if (v.name === fmName || moduleName.includes(v.name) || fmName.includes(v.name)) {
+
+    // match op exacte naam óf gedeelde code
+    if (v.name === moduleName) {
+      map.flyTo(markerObj.getLatLng(), 12, { duration: 0.6 });
+      markerObj.openPopup();
+      return;
+    }
+    const vCode = normalizeCodeLike(v.name);
+    if (code && vCode && code === vCode) {
       map.flyTo(markerObj.getLatLng(), 12, { duration: 0.6 });
       markerObj.openPopup();
       return;
@@ -219,11 +275,16 @@ function flyToVehicleForModule(moduleName) {
   }
 }
 
-// ---------- VRM GPS (fallback markers) ----------
+// ================== VRM GPS (fallback markers) ==================
 function hasFMTrackMarkerLike(name) {
+  // Als VRM naam een code bevat die we in fm-track zien, sla dan over
+  const vrmCode = codeFromVRMName(name);
   for (const [, m] of markers) {
     const v = m.__vehData;
-    if (v && (v.name === name || name.includes(v.name) || v.name.includes(name))) return true;
+    if (!v) continue;
+    const vCode = normalizeCodeLike(v.name);
+    if (vrmCode && vCode && vrmCode === vCode) return true;
+    if (v.name === name || name.includes(v.name) || v.name.includes(name)) return true;
   }
   return false;
 }
@@ -238,7 +299,6 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
 
     vrmLayer.clearLayers();
 
-    // Simple promise pool for gentle concurrency
     let i = 0, active = 0;
     await new Promise(resolve => {
       const next = async () => {
@@ -246,18 +306,24 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
         const site = sites[i++]; active++;
         try {
           if (!hasFMTrackMarkerLike(site.name)) {
+            // haal GPS op
             const resp = await fetch(`/api/vrm-gps?idSite=${site.idSite}`, { cache: 'no-store' });
             const j = await resp.json();
             if (j.ok && Number.isFinite(j.lat) && Number.isFinite(j.lon)) {
-              L.marker([j.lat, j.lon])
+              // Koppel met DSE via code
+              const code = codeFromVRMName(site.name);
+              const dse = code ? DSE_BY_CODE[code] : null;
+
+              const marker = greenDot(j.lat, j.lon)
                 .bindPopup(
-                  `<b>${site.name}</b><br>` +
+                  `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
                   `VRM GPS (${j.source || 'widget'})<br>` +
                   (j.ts ? new Date(j.ts).toLocaleString() + '<br>' : '') +
                   (j.speed != null ? `Snelheid: ${(j.speed*3.6).toFixed(1)} km/u<br>` : '') +
-                  (j.alt != null ? `Hoogte: ${j.alt} m` : '')
-                )
-                .addTo(vrmLayer);
+                  (j.alt != null ? `Hoogte: ${j.alt} m<br>` : '') +
+                  (dse ? `Draaiuren (DSE): ${dse.hours} <small>${dse.ts ? `(${dse.ts})` : ''}</small>` : `Draaiuren (DSE): -`)
+                );
+              marker.addTo(vrmLayer);
             }
           }
         } catch (e) {
@@ -273,13 +339,13 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
   }
 }
 
-// ---------- Boot ----------
+// ================== Boot ==================
 document.addEventListener('DOMContentLoaded', async () => {
   attachTableUX();
-  await loadHoursIntoTable();          // Fill DSE hours + table
+  await loadHoursIntoTable();          // DSE tabel + indexen (incl. code)
 
-  refreshVehicles();                   // fm-track vehicles now
+  refreshVehicles();                   // fm-track markers (groene dots)
   setInterval(refreshVehicles, 10000);
 
-  loadVRMGPSMarkers(150, 6);           // Add VRM markers for sites missing fm-track
+  loadVRMGPSMarkers(150, 6);           // VRM markers + DSE koppeling via code
 });
