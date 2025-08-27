@@ -16,42 +16,40 @@ module.exports = async function (context, req) {
     r.end();
   });
 
-  // Try PAT first, then JWT
+  // try PAT first, then JWT
   const headerOptions = [
     { "X-Authorization": `Token ${TOKEN}`, "Accept": "application/json" },
     { "X-Authorization": `Bearer ${TOKEN}`, "Accept": "application/json" },
   ];
 
   try {
-    let idUser = null, workingHeaders = null, last = null;
+    let userId = null, Hgood = null, last = null;
 
-    // 1) Who am I? /users/me
+    // 1) Who am I?
     for (const H of headerOptions) {
       const me = await httpGet(`${base}/users/me`, H);
       last = me;
       if (me.status === 200) {
         try {
-          const json = JSON.parse(me.text);
-          idUser = json?.idUser || json?.data?.idUser || json?.user?.idUser;
-          workingHeaders = H;
-          break;
+          const j = JSON.parse(me.text);
+          // VRM returns { success:true, user:{ id, ... } }
+          userId = j?.user?.id ?? j?.idUser ?? j?.data?.idUser ?? null;
+          if (userId) { Hgood = H; break; }
         } catch {}
       } else if (me.status === 401 || me.status === 403) {
-        continue; // try next header type
+        continue; // try next header style
       } else {
         return respond(me.status, { ok:false, error:"VRM_HTTP_ME", preview: me.text.slice(0,400) });
       }
     }
 
-    if (!idUser || !workingHeaders) {
-      return respond(last?.status || 401, { ok:false, error:"AUTH", msg:"Token rejected for /users/me as both Token and Bearer. Verify token type & value.", preview:last?.text?.slice(0,400) });
+    if (!userId || !Hgood) {
+      return respond(last?.status || 401, { ok:false, error:"AUTH", msg:"Token accepted but no user id found in /users/me response.", preview:last?.text?.slice(0,400) });
     }
 
-    // 2) List my installations: /users/{idUser}/installations
-    const li = await httpGet(`${base}/users/${idUser}/installations?extended=1`, workingHeaders);
-    if (li.status !== 200) {
-      return respond(li.status, { ok:false, error:"VRM_HTTP_INSTALLATIONS", preview: li.text.slice(0,400) });
-    }
+    // 2) List installations for this user
+    const li = await httpGet(`${base}/users/${userId}/installations?extended=1`, Hgood);
+    if (li.status !== 200) return respond(li.status, { ok:false, error:"VRM_HTTP_INSTALLATIONS", preview: li.text.slice(0,400) });
 
     let parsed; try { parsed = JSON.parse(li.text); } catch {
       return respond(502, { ok:false, error:"VRM_NON_JSON_INSTALLATIONS", preview: li.text.slice(0,200) });
@@ -69,7 +67,7 @@ module.exports = async function (context, req) {
       name: it.name || it.siteName || it.nickname || `Site ${it.idSite || it.id || it.identifier}`
     })).filter(x => x.idSite && x.name);
 
-    return respond(200, { ok:true, idUser, count: out.length, installations: out });
+    return respond(200, { ok:true, userId, count: out.length, installations: out });
   } catch (e) {
     return respond(500, { ok:false, error:"FATAL", msg:String(e).slice(0,400) });
   }
