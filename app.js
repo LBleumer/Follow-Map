@@ -213,12 +213,41 @@ function flyToVehicleForModule(moduleName) {
   }
 }
 
+const vrmLayer = L.layerGroup().addTo(map);
+
+function drawVRMOnlySites(sites) {
+  vrmLayer.clearLayers();
+  for (const s of sites) {
+    if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
+
+    // Skip if fm-track already has a marker with same/similar name
+    let duplicate = false;
+    for (const [, m] of markers) {
+      const v = m.__vehData;
+      if (v && (v.name === s.name || s.name.includes(v.name) || v.name.includes(s.name))) {
+        duplicate = true; break;
+      }
+    }
+    if (duplicate) continue;
+
+    L.marker([s.lat, s.lon])
+      .bindPopup(`<b>${s.name}</b><br>Last VRM GPS: ${s.last_seen || '-'}`)
+      .addTo(vrmLayer);
+  }
+}
+
+
 // ===== STARTUP =====
 document.addEventListener('DOMContentLoaded', async () => {
-  // 1) Load hours & init table
+  // 1) VRM
+  let vrmSites = [];
+  try { vrmSites = await fetchVRMSites(); indexVRM(vrmSites); drawVRMOnlySites(vrmSites); }
+  catch(e) { console.warn('VRM load failed:', e); }
+
+  // 2) DSE hours (you already have this)
   await loadHoursIntoTable();
 
-  // 2) Start vehicle loop
+  // 3) Vehicles (fm-track)
   refreshVehicles();
   setInterval(refreshVehicles, 10000);
 });
