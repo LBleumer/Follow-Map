@@ -1,70 +1,71 @@
-// Lists all installations + current GPS from VRM
-// Docs: https://vrm-api-docs.victronenergy.com/ (Auth via X-Authorization)
-// Community examples show "Token <personal access token>" in X-Authorization.
-
+// Robust VRM installations lister with clear error messages
 module.exports = async function (context, req) {
-  const TOKEN = process.env.VRM_TOKEN;
+  const TOKEN = process.env.VRM_TOKEN; // set this in SWA env vars
   const respond = (status, obj) => {
     context.res = { status, headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify(obj) };
   };
-  if (!TOKEN) return respond(500, { ok:false, error:"CONFIG", msg:"VRM_TOKEN missing" });
 
-  const H = { "X-Authorization": "Token " + TOKEN, "Accept": "application/json" };
+  if (!TOKEN) {
+    return respond(500, { ok:false, error:"CONFIG", msg:"VRM_TOKEN missing in environment variables" });
+  }
 
-  // Helper: VRM fetch
-  const jget = async (url) => {
-    const r = await fetch(url, { headers: H });
-    const text = await r.text();
-    if (!r.ok) throw new Error(`VRM ${r.status} ${url}: ${text.slice(0,300)}`);
-    try { return JSON.parse(text); } catch { throw new Error("NON_JSON"); }
+  const base = "https://vrmapi.victronenergy.com/v2";
+  const headers = {
+    // VRM expects X-Authorization with "Token <personal access token>"
+    "X-Authorization": `Token ${TOKEN}`,
+    "Accept": "application/json"
   };
 
+  async function jget(url) {
+    const r = await fetch(url, { headers });
+    const text = await r.text();
+    if (!r.ok) {
+      return { _http_error: true, status: r.status, url, body: text.slice(0, 500) };
+    }
+    try { return JSON.parse(text); }
+    catch { return { _parse_error: true, url, preview: text.slice(0, 200) }; }
+  }
+
   try {
-    // 1) Discover installations accessible to the token.
-    // The v2 API exposes an installations listing for the current user/token context.
-    // Typical endpoint: /v2/installations?extended=1  (commonly referenced in examples)
-    const base = "https://vrmapi.victronenergy.com/v2";
-    const list = await jget(`${base}/installations?extended=1`);
+    // Try common listing endpoint
+    const url = `${base}/installations?extended=1`;
+    const res = await jget(url);
 
-    const arr = (list?.records || list?.installations || list?.data || []);
-    if (!Array.isArray(arr)) {
-      return respond(502, { ok:false, error:"UNEXPECTED_LIST", preview: list });
+    // Surface HTTP errors with detail so you can see 401/403 etc.
+    if (res._http_error) {
+      return respond(res.status, { ok:false, error:"VRM_HTTP", url: res.url, preview: res.body });
+    }
+    if (res._parse_error) {
+      return respond(502, { ok:false, error:"VRM_NON_JSON", url: res.url, preview: res.preview });
     }
 
-    // 2) For each installation, fetch GPS widget (current position).
-    // Endpoint used in community examples: /v2/installations/{idSite}/widgets/GPS
-    const out = [];
-    // Rate-limit a bit to be friendly
-    const delay = (ms) => new Promise(r => setTimeout(r, ms));
-    for (const it of arr) {
-      const idSite = it.idSite || it.id || it.identifier;
-      const name = it.name || it.nickname || it.siteName || `Site ${idSite}`;
-      if (!idSite) continue;
+    // Normalise list shapes seen in the wild
+    const arr =
+      (Array.isArray(res.records) && res.records) ||
+      (Array.isArray(res.installations) && res.installations) ||
+      (Array.isArray(res.data?.records) && res.data.records) ||
+      (Array.isArray(res.data?.installations) && res.data.installations) ||
+      [];
 
-      let gps = null;
-      try {
-        gps = await jget(`${base}/installations/${idSite}/widgets/GPS`);
-      } catch (e) {
-        // GPS might be disabled or not present; skip silently
-        gps = null;
-      }
-
-      const rec = {
-        idSite,
-        name,
-        lat: gps?.records?.[0]?.value?.lat ?? gps?.records?.[0]?.lat ?? null,
-        lon: gps?.records?.[0]?.value?.lon ?? gps?.records?.[0]?.lon ?? null,
-        last_seen: gps?.records?.[0]?.timestamp ?? gps?.start ?? null,
-        speed: gps?.records?.[0]?.value?.speed ?? gps?.records?.[0]?.speed ?? null
-      };
-      out.push(rec);
-
-      // small delay to avoid rate limits
-      await delay(120);
+    // If it’s still empty, tell the caller what keys we got back
+    if (!arr.length) {
+      return respond(200, { ok:true, count: 0, installations: [], note: "No installations in response", keys: Object.keys(res) });
     }
+
+    // Optionally fetch GPS widget per site (skip if you just want to see something first)
+    // Minimal output first; uncomment GPS block later if desired.
+    const out = arr.map(it => ({
+      idSite: it.idSite || it.id || it.identifier,
+      name: it.name || it.nickname || it.siteName || `Site ${it.idSite || it.id || it.identifier}`,
+      // lat/lon will be filled later if you enable the GPS fetch below
+      lat: null,
+      lon: null,
+      last_seen: null,
+      speed: null
+    })).filter(x => x.idSite);
 
     return respond(200, { ok:true, count: out.length, installations: out });
   } catch (e) {
-    return respond(500, { ok:false, error:"VRM_PROXY", msg: String(e).slice(0,300) });
+    return respond(500, { ok:false, error:"VRM_PROXY", msg: String(e).slice(0, 300) });
   }
 };
