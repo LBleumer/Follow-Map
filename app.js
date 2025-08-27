@@ -179,10 +179,14 @@ function vehicleIcon(angleDeg) {
 
 function popupHtml(v) {
   const when = v.ts ? new Date(v.ts).toLocaleString() : '-';
-  return `<b>${v.name || 'Onbekend'}</b><br>
+  const key = DSE_NAME_MAP[v.name] || v.name;
+  const dse = DSE_BY_MODULE[key];
+  const hoursLine = dse ? `Draaiuren: ${dse.hours} <small>(${dse.ts})</small>` : `Draaiuren: -`;
+  return `<b>${v.name || v.id}</b><br>
           Laatst gezien: ${when}<br>
           Snelheid: ${v.speed ?? '-'} km/u<br>
-          Richting: ${v.heading ?? '-'}`;
+          Richting: ${v.heading ?? '-'}<br>
+          ${hoursLine}`;
 }
 
 async function refreshVehicles() {
@@ -210,6 +214,8 @@ async function refreshVehicles() {
         m.setIcon(vehicleIcon(v.heading));
         m.setPopupContent(popupHtml(v));
       }
+      
+      m.__vehData = v; // keep the vehicle on the marker so the table can find it
       bounds.push([v.lat, v.lon]);
     });
 
@@ -230,6 +236,11 @@ async function refreshVehicles() {
     console.error('Vehicle refresh failed:', err);
   }
 }
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadHoursIntoTable();      // fill the table (and DSE_BY_MODULE)
+  refreshVehicles();               // your existing function
+  setInterval(refreshVehicles, 10000);
+});
 
 // start + interval
 refreshVehicles();
