@@ -3,3 +3,17 @@ html, body, #map {
   margin: 0;
   padding: 0;
 }
+html, body { height: 100%; margin: 0; }
+#layout { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
+#sidebar { padding: 12px; overflow: auto; border-right: 1px solid #eee; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+#sidebar h2 { margin: 6px 0 10px; font-size: 16px; }
+.tools { display: flex; gap: 8px; margin-bottom: 10px; }
+.tools input { flex: 1; padding: 6px 8px; }
+.tools button { padding: 6px 10px; cursor: pointer; }
+#dse-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+#dse-table th, #dse-table td { padding: 6px 4px; border-bottom: 1px solid #eee; }
+#dse-table th { text-align: left; user-select: none; cursor: pointer; }
+#dse-table td.num { text-align: right; }
+.muted { color: #777; font-size: 13px; margin-top: 6px; }
+#map { height: 100%; }
+.veh { font-size: 18px; line-height: 1; }
