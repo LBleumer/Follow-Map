@@ -1,6 +1,17 @@
 {
   "bindings": [
-    { "authLevel":"anonymous","type":"httpTrigger","direction":"in","name":"req","methods":["get"],"route":"vrm-gps" },
-    { "type":"http","direction":"out","name":"res" }
+    {
+      "authLevel": "anonymous",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "req",
+      "methods": [ "get" ],
+      "route": "vrm-gps"
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "res"
+    }
   ]
 }
