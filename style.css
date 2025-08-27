@@ -1,8 +1,3 @@
-html, body, #map {
-  height: 100%;
-  margin: 0;
-  padding: 0;
-}
 html, body { height: 100%; margin: 0; }
 #layout { display: grid; grid-template-columns: 360px 1fr; height: 100%; }
 #sidebar { padding: 12px; overflow: auto; border-right: 1px solid #eee; font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
