@@ -10,6 +10,72 @@ module.exports = async function (context, req) {
     };
   };
 
+  const https = require('https');
+const zlib = require('zlib');
+
+module.exports = async function (context, req) {
+  const respond = (status, obj) => {
+    context.res = {
+      status,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(obj, null, 2)
+    };
+  };
+
+  const url = process.env.DSE_CSV_URL;
+  if (!url) {
+    return respond(500, { ok:false, error:'CONFIG', msg:'DSE_CSV_URL not set in environment variables' });
+  }
+
+  try {
+    const buf = await download(url);
+    const raw = looksGzip(buf) ? zlib.gunzipSync(buf) : buf;
+    const csvText = raw.toString('utf-8');
+    const items = parseDSECSV(csvText);
+
+    return respond(200, { ok:true, count: items.length, items });
+  } catch (e) {
+    return respond(500, { ok:false, error:'FETCH', msg:String(e) });
+  }
+};
+
+function download(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, res => {
+      if (res.statusCode !== 200) return reject(new Error('HTTP '+res.statusCode));
+      const chunks = [];
+      res.on('data', d => chunks.push(d));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    }).on('error', reject);
+  });
+}
+
+function looksGzip(buf) {
+  return buf && buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+}
+
+// Simple CSV parser (semicolon or comma)
+function parseDSECSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').split('\n').filter(Boolean);
+  if (!lines.length) return [];
+
+  const delim = (lines[0].match(/;/g) || []).length > (lines[0].match(/,/g) || []).length ? ';' : ',';
+  const headers = lines[0].split(delim).map(h => h.trim().toLowerCase());
+
+  const iName  = headers.findIndex(h => h.includes('name') || h.includes('module'));
+  const iHours = headers.findIndex(h => h.includes('hour') || h.includes('draai'));
+  const iTs    = headers.findIndex(h => h.includes('time') || h.includes('datum'));
+
+  return lines.slice(1).map(line => {
+    const cols = line.split(delim);
+    return {
+      moduleName: iName >= 0 ? cols[iName] : '',
+      hours:      iHours >= 0 ? cols[iHours] : '',
+      ts:         iTs >= 0 ? cols[iTs] : ''
+    };
+  }).filter(r => r.moduleName);
+}
+
   // ---- Config via environment variables ----
   // Option A (recommended): SAS URL that points to a *container*
   //   BLOB_SAS_URL = https://<acct>.blob.core.windows.net/<container>?<SAS>
