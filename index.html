@@ -7,38 +7,33 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 </head>
 <body>
-  <div id="map"></div>
+  <div id="layout">
+    <aside id="sidebar">
+      <h2>Generatoren</h2>
+
+      <div class="tools">
+        <input id="search" type="search" placeholder="Zoek naam…" />
+        <button id="refresh">Verversen</button>
+      </div>
+
+      <table id="dse-table">
+        <thead>
+          <tr>
+            <th data-k="moduleName">Naam</th>
+            <th data-k="hours" class="num">Draaiuren</th>
+            <th data-k="ts">Laatst</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <div id="empty" class="muted" hidden>Geen data (nog).</div>
+    </aside>
+
+    <main id="map"></main>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
-<div id="layout">
-  <aside id="sidebar">
-    <h2>Generatoren</h2>
-
-    <div class="tools">
-      <input id="search" type="search" placeholder="Zoek naam…" />
-      <button id="refresh">Verversen</button>
-    </div>
-
-    <table id="dse-table">
-      <thead>
-        <tr>
-          <th data-k="moduleName">Naam</th>
-          <th data-k="hours" class="num">Draaiuren</th>
-          <th data-k="ts">Laatst</th>
-        </tr>
-      </thead>
-      <tbody><!-- rows injected by app.js --></tbody>
-    </table>
-
-    <div id="empty" class="muted" hidden>Geen data (nog).</div>
-  </aside>
-
-  <main id="map"></main>
-</div>
-
-<!-- Leaflet + your app -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js"></script>
