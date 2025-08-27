@@ -3,6 +3,29 @@ let DSE_ITEMS = [];
 let DSE_BY_MODULE = Object.create(null);
 let TABLE_INITIALISED = false;
 
+const vrmLayer = L.layerGroup().addTo(map);
+
+function drawVRMOnlySites(sites) {
+  vrmLayer.clearLayers();
+  for (const s of sites) {
+    if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
+
+    // Skip if fm-track already has a similar-named marker:
+    let dup = false;
+    for (const [, m] of markers) {
+      const v = m.__vehData;
+      if (v && (v.name === s.name || s.name.includes(v.name) || v.name.includes(s.name))) {
+        dup = true; break;
+      }
+    }
+    if (dup) continue;
+
+    L.marker([s.lat, s.lon])
+      .bindPopup(`<b>${s.name}</b><br>VRM GPS<br>${s.ts ? new Date(s.ts).toLocaleString() : ''}`)
+      .addTo(vrmLayer);
+  }
+}
+
 // Map fm-track 'name' -> DSE moduleName (fill when names differ)
 const DSE_NAME_MAP = {
   // "Ranger VKG-13-S": "015K047 Yanmar - 6729699673",
@@ -227,19 +250,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     // kick table (even if VRM fails)
     await loadHoursIntoTable();
 
-    // try VRM, but don't block UI if it fails
-    try {
-      const vrmSites = await fetchVRMSites();
-      indexVRM(vrmSites);
-      drawVRMOnlySites(vrmSites);
-    } catch (vrmErr) {
-      console.warn('VRM load skipped:', vrmErr);
-    }
+  // 2) fm-track vehicles
+  refreshVehicles();
+  setInterval(refreshVehicles, 10000);
 
-    // start vehicles loop
-    refreshVehicles();
-    setInterval(refreshVehicles, 10000);
+  // 3) VRM (only GPS for a capped subset at once)
+  try {
+    const r = await fetch('/api/vrm-installations?gps=1&limit=200', { cache: 'no-store' });
+    const data = await r.json();
+    if (data.ok) drawVRMOnlySites(data.installations);
   } catch (e) {
-    console.error('Startup failed:', e);
+    console.warn('VRM GPS load skipped:', e);
   }
 });
