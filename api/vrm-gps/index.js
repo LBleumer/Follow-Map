@@ -40,9 +40,9 @@ module.exports = async function (context, req) {
     if (lat != null && lon != null) {
       return { lat:+lat, lon:+lon, ts:rec.timestamp ?? null };
     }
-
-    // VRM widget "attributes" shape
-    const attrs = rec?.data?.attributes ?? rec?.attributes;
+    
+// VRM widget "attributes" shape
+const attrs = rec?.data?.attributes ?? rec?.attributes ?? rec?.records?.data?.attributes;
     if (attrs && typeof attrs === 'object') {
       const latA = attrs['4'];   // Latitude
       const lonA = attrs['5'];   // Longitude
