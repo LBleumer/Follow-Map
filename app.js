@@ -8,6 +8,24 @@ const DSE_NAME_MAP = {
   // "Ranger VKG-13-S": "015K047 Yanmar - 6729699673",
 };
 
+// ===== VRM installations (primary presence) =====
+let VRM_BY_NAME = Object.create(null);
+
+async function fetchVRMSites() {
+  const r = await fetch('/api/vrm-installations', { cache: 'no-store' });
+  const data = await r.json();
+  if (!data.ok) throw new Error(data.error || 'VRM API error');
+  return data.installations || [];
+}
+
+function indexVRM(sites) {
+  VRM_BY_NAME = Object.create(null);
+  for (const s of sites) {
+    if (!s || !s.name) continue;
+    VRM_BY_NAME[s.name] = s;
+  }
+}
+
 function hoursToDecimal(hhmmss) {
   if (!hhmmss) return null;
   const [h, m = 0, s = 0] = hhmmss.split(':').map(Number);
