@@ -1,11 +1,9 @@
 // ================== Leaflet map ==================
 const map = L.map('map').setView([52.2, 5.3], 7);
 
-// Dedicated panes so cars are above VRM dots
-map.createPane('vrmPane');        // VRM dots (lower)
-map.getPane('vrmPane').style.zIndex = 640;
-map.createPane('vehiclesPane');   // Vehicles (higher)
-map.getPane('vehiclesPane').style.zIndex = 650;
+// Panes: cars above VRM dots
+map.createPane('vrmPane');        map.getPane('vrmPane').style.zIndex = 640;
+map.createPane('vehiclesPane');   map.getPane('vehiclesPane').style.zIndex = 650;
 
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
@@ -14,7 +12,8 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 
 // Layers
 const vehicleLayer = L.layerGroup().addTo(map); // fm-track cars
-const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS markers
+const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS dots
+vehicleLayer.bringToFront?.();
 
 // ================== Marker helpers ==================
 function vehicleIcon(angleDeg) {
@@ -50,11 +49,8 @@ let DSE_BY_MODULE = Object.create(null);
 let DSE_BY_CODE   = Object.create(null);
 
 let VRM_SITES = [];                      // [{ idSite, name }]
-let VRM_NAME_BY_CODE = Object.create(null);
-let VRM_BY_CODE = Object.create(null);
-
-// Manual overrides if needed (DSE moduleName → unified code)
-// const MANUAL_MAP = { "example DSE module name": "015K030" };
+let VRM_NAME_BY_CODE = Object.create(null); // "006K031" -> full VRM display name
+let VRM_BY_CODE = Object.create(null);      // "006K031" -> site object
 
 // ================== Code extraction / normalization ==================
 function normalizeCodeLike(str) {
@@ -78,47 +74,35 @@ function normalizeCodeLike(str) {
   return null;
 }
 
-function codeFromDSE(moduleName) {
-  // if (MANUAL_MAP[moduleName]) return MANUAL_MAP[moduleName];
-  return normalizeCodeLike(moduleName);
-}
-function codeFromVRMName(name) {
-  return normalizeCodeLike(name);
-}
+function codeFromDSE(moduleName)   { return normalizeCodeLike(moduleName); }
+function codeFromVRMName(siteName) { return normalizeCodeLike(siteName); }
 
-// Try to infer a unit code for a vehicle (helps when fm-track name lacks a code)
+// Helps when fm-track name lacks a code
 function inferCodeForVehicleName(vName) {
   let code = normalizeCodeLike(vName);
   if (code) return code;
 
-  // try match against DSE module names
+  // try DSE set
   for (const [c, item] of Object.entries(DSE_BY_CODE)) {
-    const mname = item.moduleName || '';
-    if (!mname) continue;
-    if (mname.includes(vName) || vName.includes(mname)) return c;
+    const nm = item?.moduleName || '';
+    if (nm && (nm.includes(vName) || vName.includes(nm))) return c;
   }
-
-  // try match against VRM site names
-  for (const [c, name] of Object.entries(VRM_NAME_BY_CODE)) {
-    if (!name) continue;
-    if (name.includes(vName) || vName.includes(name)) return c;
+  // try VRM set
+  for (const [c, nm] of Object.entries(VRM_NAME_BY_CODE)) {
+    if (nm && (nm.includes(vName) || vName.includes(nm))) return c;
   }
   return null;
 }
 
 // ================== Hours helpers ==================
-// "HH:MM:SS" or "123,45"/"123.45" → whole hours (floored)
+// "HH:MM:SS" or decimal → whole hours
 function hoursStringToWholeHours(h) {
   if (!h && h !== 0) return null;
   const s = String(h).trim();
   const m = s.match(/^(\d{1,6}):(\d{1,2}):(\d{1,2})$/);
-  if (m) {
-    const H = parseInt(m[1], 10) || 0;
-    return H; // ignore minutes/seconds
-  }
+  if (m) return parseInt(m[1], 10) || 0;
   const dec = parseFloat(s.replace(',', '.'));
-  if (!isNaN(dec)) return Math.floor(dec);
-  return null;
+  return isNaN(dec) ? null : Math.floor(dec);
 }
 function formatHoursShort(h) {
   const whole = hoursStringToWholeHours(h);
@@ -135,7 +119,6 @@ async function fetchDSEHours() {
   if (Array.isArray(data.vehicles)) return data.vehicles;
   return [];
 }
-
 function indexDSE(items) {
   DSE_BY_MODULE = Object.create(null);
   DSE_BY_CODE   = Object.create(null);
@@ -146,7 +129,7 @@ function indexDSE(items) {
   }
 }
 
-// ================== VRM installations (names list) ==================
+// ================== VRM installations ==================
 async function fetchVRMSites(limit = 9999) {
   const r = await fetch('/api/vrm-installations?limit=' + limit, { cache: 'no-store' });
   if (!r.ok) throw new Error(`VRM list HTTP ${r.status}`);
@@ -166,7 +149,7 @@ async function fetchVRMSites(limit = 9999) {
   return sites;
 }
 
-// ================== Combined table (VRM-first names) ==================
+// ================== Combined table (VRM-first) ==================
 function buildCombinedRows() {
   const combined = [];
   const haveCode = new Set();
@@ -176,22 +159,14 @@ function buildCombinedRows() {
     const code = codeFromDSE(it.moduleName);
     if (code) haveCode.add(code);
     const vrmName = (code && VRM_NAME_BY_CODE[code]) ? VRM_NAME_BY_CODE[code] : it.moduleName;
-    combined.push({
-      displayName: vrmName,
-      code: code || null,
-      hours: formatHoursShort(it.hours)
-    });
+    combined.push({ displayName: vrmName, code: code || null, hours: formatHoursShort(it.hours) });
   }
 
   // VRM-only rows (blank hours)
   for (const s of VRM_SITES) {
     const code = codeFromVRMName(s.name);
     if (code && haveCode.has(code)) continue;
-    combined.push({
-      displayName: s.name,
-      code: code || null,
-      hours: ''
-    });
+    combined.push({ displayName: s.name, code: code || null, hours: '' });
   }
 
   combined.sort((a,b) => String(a.displayName||'').localeCompare(String(b.displayName||'')));
@@ -251,7 +226,7 @@ function attachTableUX() {
   }
 }
 
-// ================== Selection helpers (two-way link) ==================
+// ================== Selection helpers ==================
 function highlightTableRow(code, name, scroll) {
   const rows = document.querySelectorAll('#dse-table tbody tr');
   let found = null;
@@ -286,8 +261,10 @@ function popupHtmlForVehicle(v) {
 async function refreshVehicles() {
   try {
     const res = await fetch('/api/vehicles', { cache: 'no-store' });
+    console.log('[vehicles] HTTP', res.status);
     if (!res.ok) throw new Error(`API ${res.status}`);
     const data = await res.json();
+    console.log('[vehicles] count', data?.count, Array.isArray(data?.vehicles) ? data.vehicles.length : 'n/a');
     if (!data.ok) throw new Error(data.error || 'API error');
 
     const seen = new Set();
@@ -298,9 +275,9 @@ async function refreshVehicles() {
       const lon = Number(v.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-      const id = v.id || v.name;
-
+      const id = v.id || v.name || `${lat},${lon}`;
       let m = markers.get(id);
+
       if (!m) {
         m = L.marker([lat, lon], {
               pane: 'vehiclesPane',
@@ -320,12 +297,13 @@ async function refreshVehicles() {
         m.setPopupContent(popupHtmlForVehicle(v));
       }
 
-      // infer & store a stable code on the marker, and index it
+      // index by inferred code (for table → map)
       const inferred = inferCodeForVehicleName(v.name);
       m.__code = inferred || null;
       if (inferred) CODE_TO_MARKER.set(inferred, m);
 
       m.__vehData = v;
+      vehicleLayer.bringToFront?.();
       m.bringToFront?.();
       bounds.push([lat, lon]);
       seen.add(id);
@@ -365,6 +343,7 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
   try {
     await fetchVRMSites(limit);   // fills VRM_SITES, VRM_NAME_BY_CODE, VRM_BY_CODE
     vrmLayer.clearLayers();
+    VRM_CODE_TO_MARKER.clear();
 
     let i = 0, active = 0;
     await new Promise(resolve => {
@@ -372,28 +351,26 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
         if (i >= VRM_SITES.length) { if (active === 0) resolve(); return; }
         const site = VRM_SITES[i++]; active++;
         try {
-          if (!hasFMTrackMarkerLike(site.name)) {
-            const resp = await fetch(`/api/vrm-gps?idSite=${site.idSite}`, { cache: 'no-store' });
-            const j = await resp.json();
-            if (j.ok && Number.isFinite(j.lat) && Number.isFinite(j.lon)) {
-              const code = codeFromVRMName(site.name);
-              const dse  = code ? DSE_BY_CODE[code] : null;
+          // Optional: if a car with same code exists, you can skip adding a VRM dot
+          // if (hasFMTrackMarkerLike(site.name)) { active--; return next(); }
 
-              const popup = `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
-                            (dse ? `Draaiuren (DSE): ${formatHoursShort(dse.hours)}` : `Draaiuren: -`);
+          const resp = await fetch(`/api/vrm-gps?idSite=${site.idSite}`, { cache: 'no-store' });
+          const j = await resp.json();
+          if (j.ok && Number.isFinite(j.lat) && Number.isFinite(j.lon)) {
+            const code = codeFromVRMName(site.name);
+            const dse  = code ? DSE_BY_CODE[code] : null;
 
-              const mk = greenDotVRM(j.lat, j.lon)
-                .bindPopup(popup)
-                .on('click', () => {
-                  highlightTableRow(code || null, site.name, true);
-                })
-                .addTo(vrmLayer);
+            const popup = `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
+                          (dse ? `Draaiuren (DSE): ${formatHoursShort(dse.hours)}` : `Draaiuren: -`);
 
-              mk.__code = code || null;
-              mk.__name = site.name || '';
-              if (code) VRM_CODE_TO_MARKER.set(code, mk);
-              // stays visually below vehicles because of pane zIndex
-            }
+            const mk = greenDotVRM(j.lat, j.lon)
+              .bindPopup(popup)
+              .on('click', () => { highlightTableRow(code || null, site.name, true); })
+              .addTo(vrmLayer);
+
+            mk.__code = code || null;
+            mk.__name = site.name || '';
+            if (code) VRM_CODE_TO_MARKER.set(code, mk);
           }
         } catch (e) {
           console.warn('VRM GPS error for', site.idSite, e);
@@ -410,7 +387,7 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
   }
 }
 
-// ================== Jump logic (table → map, cars first, then VRM) ==================
+// ================== Jump logic (table → map) ==================
 function flyToByCodeOrName(code, fallbackName) {
   const targetCode = code || (fallbackName ? normalizeCodeLike(fallbackName) : null);
 
@@ -485,7 +462,5 @@ async function reloadAllData() {
 document.addEventListener('DOMContentLoaded', async () => {
   attachTableUX();
   await reloadAllData();
-
-  // Keep fm-track updating
-  setInterval(refreshVehicles, 10000);
+  setInterval(refreshVehicles, 10000); // keep cars updating
 });
