@@ -15,6 +15,9 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const vehicleLayer = L.layerGroup().addTo(map); // fm-track
 const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS markers
 
+const CODE_TO_MARKER = new Map();     // cars
+const VRM_CODE_TO_MARKER = new Map(); // VRM generators
+
 // Small bright-green dots (generic; no pane set)
 function greenDot(lat, lon) {
   return L.circleMarker([lat, lon], {
@@ -347,88 +350,121 @@ async function refreshVehicles() {
 function flyToByCodeOrName(code, fallbackName) {
   const targetCode = code || (fallbackName ? normalizeCodeLike(fallbackName) : null);
 
+  // 1) Cars: direct code hit
+  if (targetCode && CODE_TO_MARKER.has(targetCode)) {
+    const mk = CODE_TO_MARKER.get(targetCode);
+    map.flyTo(mk.getLatLng(), 12, { duration: 0.6 });
+    mk.openPopup(); mk.bringToFront?.();
+    return;
+  }
+
+  // 2) VRM generators: direct code hit
+  if (targetCode && VRM_CODE_TO_MARKER.has(targetCode)) {
+    const mk = VRM_CODE_TO_MARKER.get(targetCode);
+    map.flyTo(mk.getLatLng(), 12, { duration: 0.6 });
+    mk.openPopup(); mk.bringToFront?.();
+    return;
+  }
+
+  // 3) Scan cars (name/code fallback)
   for (const [, markerObj] of markers) {
     const v = markerObj.__vehData;
     if (!v) continue;
-
-    const vCode = normalizeCodeLike(v.name);
-    const nameMatch =
-      fallbackName &&
-      (v.name === fallbackName ||
-       fallbackName.includes(v.name) ||
-       v.name.includes(fallbackName));
-
+    const vCode = markerObj.__code || normalizeCodeLike(v.name);
+    const nameMatch = fallbackName &&
+      (v.name === fallbackName || fallbackName.includes(v.name) || v.name.includes(fallbackName));
     if ((targetCode && vCode && targetCode === vCode) || nameMatch) {
       map.flyTo(markerObj.getLatLng(), 12, { duration: 0.6 });
-      markerObj.openPopup();
-      markerObj.bringToFront?.();
+      markerObj.openPopup(); markerObj.bringToFront?.();
       return;
     }
   }
+
+  // 4) Scan VRM markers (name/code fallback)
+  let found = null;
+  vrmLayer.eachLayer(l => {
+    if (found) return;
+    const vCode = l.__code || null;
+    const vName = l.__name || '';
+    const nameMatch = fallbackName &&
+      (vName === fallbackName || fallbackName.includes(vName) || vName.includes(fallbackName));
+    if ((targetCode && vCode && targetCode === vCode) || nameMatch) found = l;
+  });
+  if (found) {
+    map.flyTo(found.getLatLng(), 12, { duration: 0.6 });
+    found.openPopup(); found.bringToFront?.();
+    return;
+  }
+
   console.warn('No marker found for', code || fallbackName);
 }
 
 // ================== VRM GPS (fallback markers) ==================
 function hasFMTrackMarkerLike(name) {
+  
   const vrmCode = codeFromVRMName(name);
   for (const [, m] of markers) {
     const v = m.__vehData;
     if (!v) continue;
     const vCode = normalizeCodeLike(v.name);
-    if (vrmCode && vCode && vrMCode === vCode) return true; // (typo fixed below)
+    if (vrmCode && vCode && vrmCode === vCode) return true; // (typo fixed below)
     if (v.name === name || name.includes(v.name) || v.name.includes(name)) return true;
   }
   return false;
 }
 
-async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
-  try {
-    await fetchVRMSites(limit); // fills VRM_SITES + VRM_NAME_BY_CODE + VRM_BY_CODE
+function flyToByCodeOrName(code, fallbackName) {
+  const targetCode = code || (fallbackName ? normalizeCodeLike(fallbackName) : null);
 
-    vrmLayer.clearLayers();
-
-    let i = 0, active = 0;
-    await new Promise(resolve => {
-      const next = async () => {
-        if (i >= VRM_SITES.length) { if (active === 0) resolve(); return; }
-        const site = VRM_SITES[i++]; active++;
-        try {
-          if (!hasFMTrackMarkerLike(site.name)) {
-            const resp = await fetch(`/api/vrm-gps?idSite=${site.idSite}`, { cache: 'no-store' });
-            const j = await resp.json();
-            if (j.ok && Number.isFinite(j.lat) && Number.isFinite(j.lon)) {
-              const code = codeFromVRMName(site.name);
-              const dse = code ? DSE_BY_CODE[code] : null;
-
-              const popup = `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
-                            (dse ? `Draaiuren (DSE): ${formatHoursShort(dse.hours)}` : `Draaiuren (DSE): -`);
-
-              const mk = greenDotVRM(j.lat, j.lon)
-                .bindPopup(popup)
-                .on('click', () => {
-                  const c = codeFromVRMName(site.name);
-                  highlightTableRow(c, site.name, true);
-                })
-                .addTo(vrmLayer);
-
-              mk.bringToFront?.(); // still below vehiclesPane due to pane zIndex
-            }
-          }
-        } catch (e) {
-          console.warn('VRM GPS error for', site.idSite, e);
-        } finally {
-          active--; next();
-        }
-      };
-      for (let k = 0; k < Math.min(concurrency, VRM_SITES.length); k++) next();
-    });
-
-    // Re-render table so VRM names + VRM-only rows appear
-    renderTableFromCombined();
-  } catch (e) {
-    console.warn('VRM markers load failed:', e);
+  // 1) Cars: direct code hit
+  if (targetCode && CODE_TO_MARKER.has(targetCode)) {
+    const mk = CODE_TO_MARKER.get(targetCode);
+    map.flyTo(mk.getLatLng(), 12, { duration: 0.6 });
+    mk.openPopup(); mk.bringToFront?.();
+    return;
   }
+
+  // 2) VRM generators: direct code hit
+  if (targetCode && VRM_CODE_TO_MARKER.has(targetCode)) {
+    const mk = VRM_CODE_TO_MARKER.get(targetCode);
+    map.flyTo(mk.getLatLng(), 12, { duration: 0.6 });
+    mk.openPopup(); mk.bringToFront?.();
+    return;
+  }
+
+  // 3) Scan cars (name/code fallback)
+  for (const [, markerObj] of markers) {
+    const v = markerObj.__vehData;
+    if (!v) continue;
+    const vCode = markerObj.__code || normalizeCodeLike(v.name);
+    const nameMatch = fallbackName &&
+      (v.name === fallbackName || fallbackName.includes(v.name) || v.name.includes(fallbackName));
+    if ((targetCode && vCode && targetCode === vCode) || nameMatch) {
+      map.flyTo(markerObj.getLatLng(), 12, { duration: 0.6 });
+      markerObj.openPopup(); markerObj.bringToFront?.();
+      return;
+    }
+  }
+
+  // 4) Scan VRM markers (name/code fallback)
+  let found = null;
+  vrmLayer.eachLayer(l => {
+    if (found) return;
+    const vCode = l.__code || null;
+    const vName = l.__name || '';
+    const nameMatch = fallbackName &&
+      (vName === fallbackName || fallbackName.includes(vName) || vName.includes(fallbackName));
+    if ((targetCode && vCode && targetCode === vCode) || nameMatch) found = l;
+  });
+  if (found) {
+    map.flyTo(found.getLatLng(), 12, { duration: 0.6 });
+    found.openPopup(); found.bringToFront?.();
+    return;
+  }
+
+  console.warn('No marker found for', code || fallbackName);
 }
+
 
 // ================== Reload all (order matters) ==================
 async function reloadAllData() {
