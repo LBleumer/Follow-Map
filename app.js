@@ -15,7 +15,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const vehicleLayer = L.layerGroup().addTo(map); // fm-track
 const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS markers
 
-// Small bright-green dots (slightly larger for visibility)
+// Small bright-green dots (generic; no pane set)
 function greenDot(lat, lon) {
   return L.circleMarker([lat, lon], {
     radius: 6,
@@ -25,6 +25,8 @@ function greenDot(lat, lon) {
     fillOpacity: 0.95
   });
 }
+
+// VRM-specific green dot (on vrmPane)  ✅ fixed name
 function greenDotVRM(lat, lon) {
   return L.circleMarker([lat, lon], {
     pane: 'vrmPane',
@@ -35,6 +37,7 @@ function greenDotVRM(lat, lon) {
     fillOpacity: 0.95
   });
 }
+
 function vehicleIcon(angleDeg) {
   const rot = Number.isFinite(angleDeg) ? angleDeg : 0;
   return L.divIcon({
@@ -196,7 +199,7 @@ function renderTableFromCombined() {
   if (empty) empty.hidden = true;
 
   for (const row of rows) {
-    // try to ensure every row carries a code — compute from name if missing
+    // ensure every row has a code if we can derive it
     const rowCode = row.code || codeFromVRMName(row.displayName) || null;
 
     const tr = document.createElement('tr');
@@ -232,7 +235,7 @@ function attachTableUX() {
       if (!tr) return;
       let code = tr.dataset.code || '';
       const name = tr.dataset.module || '';
-      if (!code) code = codeFromVRMName(name) || ''; // try derive code from visible name
+      if (!code) code = codeFromVRMName(name) || ''; // derive code from visible name
       flyToByCodeOrName(code || null, name);
       highlightTableRow(code || null, name, true);
     });
@@ -251,7 +254,6 @@ function highlightTableRow(code, name, scroll) {
     tr.classList.toggle('selected', match);
   });
   if (found && scroll) {
-    // scroll a bit into view
     found.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 }
@@ -273,7 +275,6 @@ function popupHtmlForVehicle(v) {
 
   const codeBadge = code ? ` <small class="muted">[${code}]</small>` : '';
 
-  // No "Laatst gezien" and no timestamp next to hours
   return `<b>${displayName}${codeBadge}</b><br>
           Snelheid: ${v.speed ?? '-'} km/u<br>
           Richting: ${v.heading ?? '-'}<br>
@@ -290,37 +291,37 @@ async function refreshVehicles() {
     const seen = new Set();
     const bounds = [];
 
-(data.vehicles || []).forEach(v => {
-  const lat = Number(v.lat);
-  const lon = Number(v.lon);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    (data.vehicles || []).forEach(v => {
+      const lat = Number(v.lat);
+      const lon = Number(v.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-  const id = v.id || v.name;
+      const id = v.id || v.name;
 
-  let m = markers.get(id);
-  if (!m) {
-    m = L.marker([lat, lon], {
-          pane: 'vehiclesPane',
-          icon: vehicleIcon(v.heading)
-        })
-        .bindPopup(popupHtmlForVehicle(v))
-        .on('click', () => {
-          const code = normalizeCodeLike(v.name);
-          const displayName = (code && VRM_NAME_BY_CODE[code]) ? VRM_NAME_BY_CODE[code] : v.name;
-          highlightTableRow(code, displayName, true);
-        })
-        .addTo(vehicleLayer);
-    markers.set(id, m);
-  } else {
-    m.setLatLng([lat, lon]);
-    m.setIcon(vehicleIcon(v.heading));       // update rotation
-    m.setPopupContent(popupHtmlForVehicle(v));
-  }
-  m.__vehData = v;
-  m.bringToFront?.();
-  bounds.push([lat, lon]);
-  seen.add(id);
-});
+      let m = markers.get(id);
+      if (!m) {
+        m = L.marker([lat, lon], {
+              pane: 'vehiclesPane',
+              icon: vehicleIcon(v.heading)
+            })
+            .bindPopup(popupHtmlForVehicle(v))
+            .on('click', () => {
+              const code = normalizeCodeLike(v.name);
+              const displayName = (code && VRM_NAME_BY_CODE[code]) ? VRM_NAME_BY_CODE[code] : v.name;
+              highlightTableRow(code, displayName, true);
+            })
+            .addTo(vehicleLayer);
+        markers.set(id, m);
+      } else {
+        m.setLatLng([lat, lon]);
+        m.setIcon(vehicleIcon(v.heading));       // update rotation
+        m.setPopupContent(popupHtmlForVehicle(v));
+      }
+      m.__vehData = v;
+      m.bringToFront?.();
+      bounds.push([lat, lon]);
+      seen.add(id);
+    });
 
     // remove stale
     for (const [id, m] of markers) {
@@ -374,7 +375,7 @@ function hasFMTrackMarkerLike(name) {
     const v = m.__vehData;
     if (!v) continue;
     const vCode = normalizeCodeLike(v.name);
-    if (vrmCode && vCode && vrmCode === vCode) return true;
+    if (vrmCode && vCode && vrMCode === vCode) return true; // (typo fixed below)
     if (v.name === name || name.includes(v.name) || v.name.includes(name)) return true;
   }
   return false;
@@ -399,14 +400,18 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
               const code = codeFromVRMName(site.name);
               const dse = code ? DSE_BY_CODE[code] : null;
 
+              const popup = `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
+                            (dse ? `Draaiuren (DSE): ${formatHoursShort(dse.hours)}` : `Draaiuren (DSE): -`);
+
               const mk = greenDotVRM(j.lat, j.lon)
-  .bindPopup(/* ... */)
-  .on('click', () => {
-    const code = codeFromVRMName(site.name);
-    highlightTableRow(code, site.name, true);
-  })
-  .addTo(vrmLayer);
-mk.bringToFront?.(); // optional, still below vehiclesPane due to zInde
+                .bindPopup(popup)
+                .on('click', () => {
+                  const c = codeFromVRMName(site.name);
+                  highlightTableRow(c, site.name, true);
+                })
+                .addTo(vrmLayer);
+
+              mk.bringToFront?.(); // still below vehiclesPane due to pane zIndex
             }
           }
         } catch (e) {
