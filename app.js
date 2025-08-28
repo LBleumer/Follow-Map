@@ -1,5 +1,11 @@
 // ================== Leaflet map ==================
 const map = L.map('map').setView([52.2, 5.3], 7);
+map.createPane('vrmPane');        // VRM dots (lower)
+map.getPane('vrmPane').style.zIndex = 640;
+
+map.createPane('vehiclesPane');   // Vehicles (higher)
+map.getPane('vehiclesPane').style.zIndex = 650;
+
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap-bijdragers'
@@ -19,6 +25,26 @@ function greenDot(lat, lon) {
     fillOpacity: 0.95
   });
 }
+function greenDotVRMVRM(lat, lon) {
+  return L.circleMarker([lat, lon], {
+    pane: 'vrmPane',
+    radius: 6,
+    color: '#00E676',
+    weight: 2,
+    fillColor: '#00E676',
+    fillOpacity: 0.95
+  });
+}
+function vehicleIcon(angleDeg) {
+  const rot = Number.isFinite(angleDeg) ? angleDeg : 0;
+  return L.divIcon({
+    className: 'veh',
+    html: `<div class="veh-emoji" style="transform: rotate(${rot}deg);">🚗</div>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12]
+  });
+}
+
 
 // ================== Globals / caches ==================
 const markers = new Map(); // fm-track id -> marker
@@ -264,30 +290,37 @@ async function refreshVehicles() {
     const seen = new Set();
     const bounds = [];
 
-    (data.vehicles || []).forEach(v => {
-      if (!Number.isFinite(v.lat) || !Number.isFinite(v.lon)) return;
-      seen.add(v.id);
+(data.vehicles || []).forEach(v => {
+  const lat = Number(v.lat);
+  const lon = Number(v.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-      const code = normalizeCodeLike(v.name);
-      let m = markers.get(v.id);
-      if (!m) {
-        m = greenDot(v.lat, v.lon)
-          .bindPopup(popupHtmlForVehicle(v))
-          .on('click', () => {
-            // two-way: clicking the marker highlights table row
-            highlightTableRow(code, v.name, true);
-          })
-          .addTo(vehicleLayer);
-        markers.set(v.id, m);
-      } else {
-        m.setLatLng([v.lat, v.lon]);
-        m.setPopupContent(popupHtmlForVehicle(v));
-      }
-      m.__vehData = v;
-      m.bringToFront?.();
+  const id = v.id || v.name;
 
-      bounds.push([v.lat, v.lon]);
-    });
+  let m = markers.get(id);
+  if (!m) {
+    m = L.marker([lat, lon], {
+          pane: 'vehiclesPane',
+          icon: vehicleIcon(v.heading)
+        })
+        .bindPopup(popupHtmlForVehicle(v))
+        .on('click', () => {
+          const code = normalizeCodeLike(v.name);
+          const displayName = (code && VRM_NAME_BY_CODE[code]) ? VRM_NAME_BY_CODE[code] : v.name;
+          highlightTableRow(code, displayName, true);
+        })
+        .addTo(vehicleLayer);
+    markers.set(id, m);
+  } else {
+    m.setLatLng([lat, lon]);
+    m.setIcon(vehicleIcon(v.heading));       // update rotation
+    m.setPopupContent(popupHtmlForVehicle(v));
+  }
+  m.__vehData = v;
+  m.bringToFront?.();
+  bounds.push([lat, lon]);
+  seen.add(id);
+});
 
     // remove stale
     for (const [id, m] of markers) {
@@ -366,18 +399,14 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
               const code = codeFromVRMName(site.name);
               const dse = code ? DSE_BY_CODE[code] : null;
 
-              const mk = greenDot(j.lat, j.lon)
-                .bindPopup(
-                  `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
-                  (dse ? `Draaiuren (DSE): ${formatHoursShort(dse.hours)}` : `Draaiuren (DSE): -`)
-                )
-                .on('click', () => {
-                  // clicking VRM-only marker highlights the table row too
-                  highlightTableRow(code, site.name, true);
-                })
-                .addTo(vrmLayer);
-
-              mk.bringToFront?.();
+              const mk = greenDotVRM(j.lat, j.lon)
+  .bindPopup(/* ... */)
+  .on('click', () => {
+    const code = codeFromVRMName(site.name);
+    highlightTableRow(code, site.name, true);
+  })
+  .addTo(vrmLayer);
+mk.bringToFront?.(); // optional, still below vehiclesPane due to zInde
             }
           }
         } catch (e) {
