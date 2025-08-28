@@ -106,5 +106,16 @@ html, body {
   color: #999;
 }
 
+/* Make the layout robust on mobile Safari and various viewports */
+#layout {
+  min-height: 100vh;           /* avoids short pages on some iPad layouts */
+}
+
+/* Clickable table rows feel nicer with a pointer cursor */
+#dse-table tbody tr { cursor: pointer; }
+
+/* Optional: slightly nicer map background while tiles load */
+.leaflet-container { background: #eef3f7; }
+
 .veh { pointer-events: auto; }
 .veh-emoji { font-size: 20px; line-height: 20px; transform-origin: 50% 50%; }
