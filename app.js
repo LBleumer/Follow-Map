@@ -25,7 +25,7 @@ function greenDot(lat, lon) {
     fillOpacity: 0.95
   });
 }
-function greenDotVRMVRM(lat, lon) {
+function greenDotVRM(lat, lon) {
   return L.circleMarker([lat, lon], {
     pane: 'vrmPane',
     radius: 6,
