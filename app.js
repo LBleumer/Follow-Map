@@ -9,12 +9,12 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 const vehicleLayer = L.layerGroup().addTo(map); // fm-track
 const vrmLayer     = L.layerGroup().addTo(map); // VRM GPS markers
 
-// Small bright-green dots
+// Small bright-green dots (slightly larger for visibility)
 function greenDot(lat, lon) {
   return L.circleMarker([lat, lon], {
-    radius: 5,
+    radius: 6,
     color: '#00E676',
-    weight: 1,
+    weight: 2,
     fillColor: '#00E676',
     fillOpacity: 0.95
   });
@@ -128,38 +128,33 @@ async function fetchVRMSites(limit = 9999) {
 
 // ================== Combined table (VRM-first names) ==================
 function buildCombinedRows() {
-  // Start with all DSE rows
   const combined = [];
   const haveCode = new Set();
 
+  // DSE-backed rows (with hours)
   for (const it of DSE_ITEMS) {
     const code = codeFromDSE(it.moduleName);
     if (code) haveCode.add(code);
-
     const vrmName = (code && VRM_NAME_BY_CODE[code]) ? VRM_NAME_BY_CODE[code] : it.moduleName;
     combined.push({
-      moduleName: vrmName,
+      displayName: vrmName,
       code: code || null,
-      hours: formatHoursShort(it.hours),
-      ts: '' // we intentionally hide timestamps now
+      hours: formatHoursShort(it.hours)
     });
   }
 
-  // Add VRM-only rows (no DSE hours → blank)
+  // VRM-only rows (blank hours)
   for (const s of VRM_SITES) {
     const code = codeFromVRMName(s.name);
-    if (code && haveCode.has(code)) continue; // already in via DSE
-    // Add even if code is null (rare), using VRM name
+    if (code && haveCode.has(code)) continue;
     combined.push({
-      moduleName: s.name,
+      displayName: s.name,
       code: code || null,
-      hours: '',
-      ts: ''
+      hours: ''
     });
   }
 
-  // Sort by moduleName
-  combined.sort((a,b) => String(a.moduleName || '').localeCompare(String(b.moduleName || '')));
+  combined.sort((a,b) => String(a.displayName||'').localeCompare(String(b.displayName||'')));
   return combined;
 }
 
@@ -177,11 +172,11 @@ function renderTableFromCombined() {
   for (const row of rows) {
     const tr = document.createElement('tr');
     tr.dataset.code = row.code || '';
-    tr.dataset.module = row.moduleName || '';
+    tr.dataset.module = row.displayName || '';
     tr.innerHTML = `
-      <td>${row.moduleName}${row.code ? ` <small class="muted">[${row.code}]</small>` : ''}</td>
+      <td>${row.displayName}${row.code ? ` <small class="muted">[${row.code}]</small>` : ''}</td>
       <td class="num">${row.hours}</td>
-      <td>${row.ts}</td>
+      <td></td>
     `;
     tbody.appendChild(tr);
   }
@@ -192,28 +187,42 @@ function attachTableUX() {
   const refreshBtn = document.getElementById('refresh');
 
   function applyFilter() {
-    // quick client-side filter on already-rendered table
     const q = (search?.value || '').toLowerCase();
-    const rows = document.querySelectorAll('#dse-table tbody tr');
-    rows.forEach(tr => {
+    document.querySelectorAll('#dse-table tbody tr').forEach(tr => {
       const txt = tr.textContent.toLowerCase();
       tr.style.display = q && !txt.includes(q) ? 'none' : '';
     });
   }
-
   if (search) search.addEventListener('input', applyFilter);
-  if (refreshBtn) refreshBtn.addEventListener('click', async () => {
-    await reloadAllData();
-  });
+  if (refreshBtn) refreshBtn.addEventListener('click', reloadAllData);
 
   const tbody = document.querySelector('#dse-table tbody');
   if (tbody) {
     tbody.addEventListener('click', (e) => {
       const tr = e.target.closest('tr');
       if (!tr) return;
-      const code = tr.dataset.code;
-      flyToByCodeOrName(code, tr.dataset.module);
+      const code = tr.dataset.code || null;
+      const name = tr.dataset.module || '';
+      flyToByCodeOrName(code, name);
+      highlightTableRow(code, name, true);
     });
+  }
+}
+
+// ================== Selection helpers (two-way link) ==================
+function highlightTableRow(code, name, scroll) {
+  const rows = document.querySelectorAll('#dse-table tbody tr');
+  let found = null;
+  rows.forEach(tr => {
+    const match =
+      (code && tr.dataset.code && tr.dataset.code === code) ||
+      (!code && name && tr.dataset.module === name);
+    if (match && !found) found = tr;
+    tr.classList.toggle('selected', match);
+  });
+  if (found && scroll) {
+    // scroll a bit into view
+    found.scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 }
 
@@ -234,7 +243,7 @@ function popupHtmlForVehicle(v) {
 
   const codeBadge = code ? ` <small class="muted">[${code}]</small>` : '';
 
-  // NOTE: no "Laatst gezien" and we removed timestamp next to hours too
+  // No "Laatst gezien" and no timestamp next to hours
   return `<b>${displayName}${codeBadge}</b><br>
           Snelheid: ${v.speed ?? '-'} km/u<br>
           Richting: ${v.heading ?? '-'}<br>
@@ -255,15 +264,24 @@ async function refreshVehicles() {
       if (!Number.isFinite(v.lat) || !Number.isFinite(v.lon)) return;
       seen.add(v.id);
 
+      const code = normalizeCodeLike(v.name);
       let m = markers.get(v.id);
       if (!m) {
-        m = greenDot(v.lat, v.lon).bindPopup(popupHtmlForVehicle(v)).addTo(vehicleLayer);
+        m = greenDot(v.lat, v.lon)
+          .bindPopup(popupHtmlForVehicle(v))
+          .on('click', () => {
+            // two-way: clicking the marker highlights table row
+            highlightTableRow(code, v.name, true);
+          })
+          .addTo(vehicleLayer);
         markers.set(v.id, m);
       } else {
         m.setLatLng([v.lat, v.lon]);
         m.setPopupContent(popupHtmlForVehicle(v));
       }
       m.__vehData = v;
+      m.bringToFront?.();
+
       bounds.push([v.lat, v.lon]);
     });
 
@@ -279,6 +297,10 @@ async function refreshVehicles() {
       map.fitBounds(bounds, { padding: [30, 30] });
       didFit = true;
     }
+
+    if (bounds.length === 0) {
+      console.warn('No vehicles with coordinates from /api/vehicles');
+    }
   } catch (err) {
     console.warn('Vehicle refresh failed:', err);
   }
@@ -289,12 +311,15 @@ function flyToByCodeOrName(code, fallbackName) {
     const v = markerObj.__vehData;
     if (!v) continue;
     const vCode = normalizeCodeLike(v.name);
-    if ((code && vCode && code === vCode) || (!code && v.name === fallbackName)) {
+    const match = (code && vCode && code === vCode) || (!code && v.name === fallbackName);
+    if (match) {
       map.flyTo(markerObj.getLatLng(), 12, { duration: 0.6 });
       markerObj.openPopup();
+      markerObj.bringToFront?.();
       return;
     }
   }
+  console.warn('No marker found for', code || fallbackName);
 }
 
 // ================== VRM GPS (fallback markers) ==================
@@ -329,12 +354,18 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
               const code = codeFromVRMName(site.name);
               const dse = code ? DSE_BY_CODE[code] : null;
 
-              greenDot(j.lat, j.lon)
+              const mk = greenDot(j.lat, j.lon)
                 .bindPopup(
                   `<b>${site.name}${code ? ` <small class="muted">[${code}]</small>` : ''}</b><br>` +
                   (dse ? `Draaiuren (DSE): ${formatHoursShort(dse.hours)}` : `Draaiuren (DSE): -`)
                 )
+                .on('click', () => {
+                  // clicking VRM-only marker highlights the table row too
+                  highlightTableRow(code, site.name, true);
+                })
                 .addTo(vrmLayer);
+
+              mk.bringToFront?.();
             }
           }
         } catch (e) {
@@ -346,7 +377,7 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
       for (let k = 0; k < Math.min(concurrency, VRM_SITES.length); k++) next();
     });
 
-    // After VRM map is built, re-render table so VRM names + VRM-only rows appear
+    // Re-render table so VRM names + VRM-only rows appear
     renderTableFromCombined();
   } catch (e) {
     console.warn('VRM markers load failed:', e);
@@ -355,7 +386,6 @@ async function loadVRMGPSMarkers(limit = 150, concurrency = 6) {
 
 // ================== Reload all (order matters) ==================
 async function reloadAllData() {
-  // 1) Load DSE (hours)
   try {
     DSE_ITEMS = await fetchDSEHours();
   } catch (e) {
@@ -364,13 +394,10 @@ async function reloadAllData() {
   }
   indexDSE(DSE_ITEMS);
 
-  // 2) Load VRM installations (names)
   await fetchVRMSites();
 
-  // 3) Render table with combined data (VRM-first names, blank hours when missing)
   renderTableFromCombined();
 
-  // 4) Refresh vehicles and VRM GPS markers
   refreshVehicles();
   loadVRMGPSMarkers(150, 6);
 }
