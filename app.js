@@ -170,11 +170,14 @@ function renderTableFromCombined() {
   if (empty) empty.hidden = true;
 
   for (const row of rows) {
+    // try to ensure every row carries a code — compute from name if missing
+    const rowCode = row.code || codeFromVRMName(row.displayName) || null;
+
     const tr = document.createElement('tr');
-    tr.dataset.code = row.code || '';
+    tr.dataset.code = rowCode || '';
     tr.dataset.module = row.displayName || '';
     tr.innerHTML = `
-      <td>${row.displayName}${row.code ? ` <small class="muted">[${row.code}]</small>` : ''}</td>
+      <td>${row.displayName}${rowCode ? ` <small class="muted">[${rowCode}]</small>` : ''}</td>
       <td class="num">${row.hours}</td>
       <td></td>
     `;
@@ -201,10 +204,11 @@ function attachTableUX() {
     tbody.addEventListener('click', (e) => {
       const tr = e.target.closest('tr');
       if (!tr) return;
-      const code = tr.dataset.code || null;
+      let code = tr.dataset.code || '';
       const name = tr.dataset.module || '';
-      flyToByCodeOrName(code, name);
-      highlightTableRow(code, name, true);
+      if (!code) code = codeFromVRMName(name) || ''; // try derive code from visible name
+      flyToByCodeOrName(code || null, name);
+      highlightTableRow(code || null, name, true);
     });
   }
 }
@@ -307,12 +311,20 @@ async function refreshVehicles() {
 }
 
 function flyToByCodeOrName(code, fallbackName) {
+  const targetCode = code || (fallbackName ? normalizeCodeLike(fallbackName) : null);
+
   for (const [, markerObj] of markers) {
     const v = markerObj.__vehData;
     if (!v) continue;
+
     const vCode = normalizeCodeLike(v.name);
-    const match = (code && vCode && code === vCode) || (!code && v.name === fallbackName);
-    if (match) {
+    const nameMatch =
+      fallbackName &&
+      (v.name === fallbackName ||
+       fallbackName.includes(v.name) ||
+       v.name.includes(fallbackName));
+
+    if ((targetCode && vCode && targetCode === vCode) || nameMatch) {
       map.flyTo(markerObj.getLatLng(), 12, { duration: 0.6 });
       markerObj.openPopup();
       markerObj.bringToFront?.();
