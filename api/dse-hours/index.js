@@ -9,54 +9,102 @@ module.exports = async function (context, req) {
   const URL = process.env.DSE_CSV_URL;
   if (!URL) return respond(500, { ok:false, error:'CONFIG', msg:'DSE_CSV_URL not set' });
 
-  // Optional debug
   const wantDebug = String(req.query.debug || '0') === '1';
+  const wantDump  = String(req.query.dump  || '0') === '1';
 
   try {
     const head = await headOnly(URL);
-    const meta = { status: head.statusCode, 'content-type': head.headers['content-type'], 'content-length': head.headers['content-length'], 'last-modified': head.headers['last-modified'] };
-
-    if (head.statusCode >= 400) {
-      return respond(head.statusCode, { ok:false, error:'BLOB_HEAD', meta, hint:'Regenerate SAS with READ permission and non-expired se=...' });
+    if (head.statusCode !== 200) {
+      return respond(head.statusCode, { ok:false, error:'BLOB_HEAD', status: head.statusCode, headers: head.headers });
     }
 
     const buf = await download(URL);
     const raw = looksGzip(buf) ? zlib.gunzipSync(buf) : buf;
-    let text = raw.toString('utf-8');
+    let text  = raw.toString('utf-8');
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1); // strip BOM
 
-    // Strip UTF-8 BOM if present
-    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    // Normalize EOLs
+    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
 
-    const parsed = parseDSECSV(text, wantDebug);
+    // ---- Find the REAL header line (explicit, case-insensitive) ----
+    const headerRegex = /^\s*Gateway Name\s*,\s*Module Name\s*,\s*Engine Hours Run\s*,\s*Timestamp\s*$/i;
+    let hIndex = -1;
+    for (let i = 0; i < Math.min(lines.length, 100); i++) {
+      if (headerRegex.test(lines[i])) { hIndex = i; break; }
+    }
+    if (hIndex === -1) {
+      // fall back to a softer check (contains all tokens in any spacing)
+      for (let i = 0; i < Math.min(lines.length, 100); i++) {
+        const L = lines[i].toLowerCase();
+        if (L.includes('gateway name') && L.includes('module name') && L.includes('engine hours run') && L.includes('timestamp') && L.includes(',')) {
+          hIndex = i; break;
+        }
+      }
+    }
+    if (hIndex === -1) {
+      return respond(200, { ok:true, count:0, items:[], note:'HEADER_NOT_FOUND', preview: lines.slice(0, 10) });
+    }
+
+    const headers = splitCSV(lines[hIndex], ',').map(s => s.trim());
+    // Expected positions (strict)
+    const iGateway = headers.findIndex(h => /^gateway name$/i.test(h));
+    const iModule  = headers.findIndex(h => /^module name$/i.test(h));
+    const iHours   = headers.findIndex(h => /^engine hours run$/i.test(h));
+    const iTs      = headers.findIndex(h => /^timestamp$/i.test(h));
+
+    if ([iGateway,iModule,iHours,iTs].some(i => i < 0)) {
+      return respond(200, { ok:true, count:0, items:[], note:'HEADER_MISMATCH', headers });
+    }
+
+    const dataLines = lines.slice(hIndex + 1).filter(l => l.trim().length > 0);
+
+    if (wantDump) {
+      return respond(200, {
+        ok: true,
+        headerIndex: hIndex,
+        header: headers,
+        first20Raw: dataLines.slice(0,20)
+      });
+    }
+
+    const items = [];
+    for (const line of dataLines) {
+      const cols = splitCSV(line, ',');
+      if (!cols || cols.length < headers.length) continue;
+
+      const gateway = (cols[iGateway] || '').trim();
+      const module  = (cols[iModule]  || '').trim();
+      const hours   = (cols[iHours]   || '').trim();
+      const ts      = (cols[iTs]      || '').trim();
+
+      const moduleName = module || gateway;
+      if (!moduleName) continue;
+
+      items.push({ moduleName, hours: normalizeHours(hours), ts });
+    }
 
     if (wantDebug) {
       return respond(200, {
         ok: true,
-        meta,
-        debug: {
-          firstBytes: text.slice(0, 500),
-          delimiter: parsed._debug.delim,
-          header: parsed._debug.headers,
-          nameIndex: parsed._debug.iName,
-          hoursIndex: parsed._debug.iHours,
-          tsIndex: parsed._debug.iTs,
-          firstRowsParsed: parsed.items.slice(0, 5)
-        },
-        count: parsed.items.length,
-        items: parsed.items
+        headerIndex: hIndex,
+        header: headers,
+        firstRowsParsed: items.slice(0, 5),
+        count: items.length,
+        items
       });
     }
 
-    return respond(200, { ok:true, count: parsed.items.length, items: parsed.items });
+    return respond(200, { ok:true, count: items.length, items });
   } catch (e) {
-    return respond(500, { ok:false, error:'FETCH_OR_PARSE', msg: String(e).slice(0,400) });
+    return respond(500, { ok:false, error:'FETCH_OR_PARSE', msg:String(e).slice(0,400) });
   }
 };
 
+// ----- helpers -----
 function headOnly(url) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const req = https.request({ method:'HEAD', hostname:u.hostname, path:u.pathname + u.search }, res => {
+    const req = https.request({ method:'HEAD', hostname: u.hostname, path: u.pathname + u.search }, res => {
       resolve({ statusCode: res.statusCode, headers: res.headers }); res.resume();
     });
     req.on('error', reject); req.end();
@@ -75,62 +123,16 @@ function download(url) {
 
 function looksGzip(buf){ return buf && buf.length>2 && buf[0]===0x1f && buf[1]===0x8b; }
 
-function parseDSECSV(text, debug=false){
-  // normalize EOLs, keep empty lines out
-  const lines = text.replace(/\r\n/g,'\n').replace(/\r/g,'\n').split('\n').filter(l => l.length>0);
-  if (!lines.length) return { items: [], _debug: { delim: ',', headers: [], iName:-1,iHours:-1,iTs:-1 } };
-
-  const header = lines[0];
-
-  // Heuristic delimiter detection (favor ; for Dutch Excel)
-  const counts = { ';': (header.match(/;/g)||[]).length, ',': (header.match(/,/g)||[]).length, '\t': (header.match(/\t/g)||[]).length };
-  let delim = ';';
-  if (counts['\t'] > counts[';'] && counts['\t'] > counts[',']) delim = '\t';
-  else if (counts[','] > counts[';']) delim = ',';
-
-  const headers = split(header, delim).map(h => h.trim());
-
-  // Find indices (lots of variants)
-  const find = (alts) => headers.findIndex(h => {
-    const L = h.toLowerCase();
-    return alts.some(a => L.includes(a));
-  });
-
-  const iName  = find(['name','module','modulenaam','unit','machine','generator','device']);
-  const iHours = find(['hour','draai','enginehour','runninghour','bedrijfstijd','uren','runtime','run time']);
-  const iTs    = find(['time','datum','date','timestamp','ts','laatst','last']);
-
-  const items = [];
-  for (let i=1;i<lines.length;i++){
-    const cols = split(lines[i], delim);
-    // skip pure header repeats or separators
-    if (cols.length <= 1 || cols.every(c => c.trim()==='')) continue;
-
-    const moduleName = iName>=0 ? cols[iName].trim() : '';
-    const hoursRaw   = iHours>=0 ? cols[iHours].trim() : '';
-    const tsRaw      = iTs>=0 ? cols[iTs].trim() : '';
-
-    if (!moduleName) continue; // must have a name to show in the table
-
-    items.push({
-      moduleName,
-      hours: normalizeHours(hoursRaw),
-      ts: tsRaw
-    });
-  }
-
-  return { items, _debug: debug ? { delim, headers, iName, iHours, iTs } : undefined };
-}
-
-// CSV split that respects quotes and embedded delimiters
-function split(line, delim){
-  const out=[]; let cur=''; let q=false;
-  for (let i=0;i<line.length;i++){
-    const ch=line[i];
-    if (ch === '"'){
-      if (q && line[i+1] === '"'){ cur += '"'; i++; } else { q = !q; }
-    } else if (ch === delim && !q){
-      out.push(cur); cur='';
+// CSV splitter that respects quotes and escaped quotes
+function splitCSV(line, delim) {
+  const out = []; let cur = ''; let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (q && line[i+1] === '"') { cur += '"'; i++; }
+      else q = !q;
+    } else if (ch === delim && !q) {
+      out.push(cur); cur = '';
     } else {
       cur += ch;
     }
@@ -139,12 +141,12 @@ function split(line, delim){
   return out;
 }
 
-// Accept H:MM:SS or decimals (comma/point) and pass through as display string
+// Preserve H:MM:SS; normalize 123,45 → 123.45; else pass through
 function normalizeHours(s){
   if (s == null) return '';
   const t = String(s).trim();
   if (!t) return '';
-  if (/^\d{1,6}:\d{1,2}:\d{1,2}$/.test(t)) return t;      // 3895:41:13
-  if (/^\d+,\d+$/.test(t)) return t.replace(',', '.');    // 123,45 -> 123.45
-  return t;                                               // leave as-is otherwise
+  if (/^\d{1,6}:\d{1,2}:\d{1,2}$/.test(t)) return t;
+  if (/^\d+,\d+$/.test(t)) return t.replace(',', '.');
+  return t;
 }
